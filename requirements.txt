@@ -1,0 +1,27 @@
+# My_agent 直接依赖（Python 3.12）
+python-a2a==0.5.4
+mcp==1.18.0
+langchain==0.3.26
+langchain-core==0.3.72
+langchain-openai==0.3.28
+langchain-mcp-adapters==0.1.11
+langchain-community==0.3.27
+openai==1.97.1
+mysql-connector-python==9.4.0
+PyMySQL==1.1.1
+streamlit==1.47.1
+fastapi==0.116.1
+uvicorn==0.35.0
+pydantic==2.11.7
+pytz==2025.2
+python-multipart==0.0.20
+
+# ===== RAG_Part（向量检索 / 文档问答）=====
+# 注意：torch 体积大，若已安装 CUDA 版可保留；CPU 环境可去掉 cu 后缀自行安装
+pymilvus==3.0.1
+sentence-transformers>=4.0
+sentencepiece>=0.2
+transformers>=4.40
+FlagEmbedding>=1.4
+torch>=2.0
+

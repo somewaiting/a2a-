@@ -1,0 +1,3 @@
+# Streamlit 配置：避开 Windows 保留端口段（8501 曾被 Hyper-V/Winnat 占用导致 WinError 10013）
+[server]
+port = 9200

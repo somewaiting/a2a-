@@ -1,0 +1,34 @@
+# ============ Python / 环境 ============
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# ============ 密钥：真实 API Key 不入库 ============
+# 克隆后请复制对应 *.example.py 并填入密钥：
+#   config.example.py          -> config.py          （DeepSeek API Key）
+#   RAG_Part/config.example.py -> RAG_Part/config.py （Qwen / DashScope API Key）
+#   RAG_Part/Parse.example.py  -> RAG_Part/Parse.py  （MinerU Token）
+/config.py
+/RAG_Part/config.py
+/RAG_Part/Parse.py
+
+# 本地个人设置
+.claude/
+.local/
+
+# ============ 本地运行产物 / 日志 ============
+logs/
+*.log
+
+# ============ 大型模型与生成数据（体积大，不入库）============
+/RAG_Part/models/
+/RAG_Part/parsed/
+/RAG_Part/HTML/
+/RAG_Part/html_to_json/
+/RAG_Part/data/
+/RAG_Part/RagAble_data/
+/RAG_Part/deberta_results/
+/RAG_Part/deberta_query_classifier/
+/RAG_Part/tmp_trainer/
