@@ -243,6 +243,8 @@ class VectorStore:
         # print(f'sub_chunks--》{len(sub_chunks)}')
         # 从子块中提取去重的父文档
         parent_docs = self._get_unique_parent_docs(sub_chunks)
+        # 把直接命中的图片描述补进父块文本，改善重排对图片内容的判断
+        parent_docs = self._enrich_parent_docs_with_image_descriptions(parent_docs, sub_chunks)
         # print(f'parent_docs--》{parent_docs}')
         # print(f'parent_docs--》{len(parent_docs)}')
         # # 如果只有1个文档或者没有，直接返回跳过重排序
@@ -282,6 +284,58 @@ class VectorStore:
                 parent_contents.add(parent_content)
             # 返回去重后的父文档列表
         return unique_docs
+
+    def _enrich_parent_docs_with_image_descriptions(self, parent_docs, sub_chunks):
+        """
+        把「直接命中」的 image 子块描述附加到其父块的 page_content 上，
+        让重排器与后续 LLM 上下文能看到图片里的文字（如营业执照的经营范围），
+        避免父块里图片占位（[图片: ]）因描述为空而丢失关键信息。
+        只补充直接命中的图片描述，数量少、不膨胀上下文。
+        """
+        direct_images_by_parent = {}
+        for s in sub_chunks:
+            if s.metadata.get("type") == "image" and s.metadata.get("description"):
+                pid = s.metadata.get("parent_id")
+                direct_images_by_parent.setdefault(pid, []).append(s)
+        if not direct_images_by_parent:
+            return parent_docs
+
+        enriched = []
+        for d in parent_docs:
+            imgs = direct_images_by_parent.get(d.metadata.get("parent_id"), [])
+            if imgs:
+                desc_parts = []
+                for s in imgs:
+                    alt = s.metadata.get("alt") or ""
+                    desc_parts.append(f"[图片: {alt or '无标题'}]\n{s.metadata['description']}")
+                new_content = d.page_content + "\n\n===== 图片内容 =====" + "\n\n".join(desc_parts)
+                enriched.append(Document(page_content=new_content, metadata=dict(d.metadata)))
+            else:
+                enriched.append(d)
+        return enriched
+
+    def get_images_by_parents(self, parent_ids):
+        """
+        按父块 ID 回查同父块内的 image 子块（兄弟图片）。
+        用于：检索命中的是文本子块，但其父块内包含图片时，也能把图片一并返回/交给多模态模型读取。
+        """
+        ids = [p for p in parent_ids if p]
+        if not ids:
+            return []
+        expr = "type == 'image' && parent_id in " + str(ids)
+        try:
+            hits = self.client.query(
+                collection_name=self.collection_name,
+                filter=expr,
+                output_fields=["text", "parent_id", "parent_content", "source", "timestamp",
+                               "type", "category", "heading_path", "source_file",
+                               "full_html", "caption", "src", "abs_path", "alt", "description"],
+                limit=100,
+            )
+        except Exception as e:
+            print(f"   ⚠️ 回查兄弟图片失败: {e}")
+            return []
+        return [self._doc_from_hit(h) for h in hits]
 
     # 定义类似私有方法，从 Milvus 查询结果创建 Document 对象
     def _doc_from_hit(self, hit):

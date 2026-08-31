@@ -10,8 +10,11 @@
 """
 import sys
 import re
+import json
 import asyncio
 from pathlib import Path
+
+import httpx
 
 # 将 My_agent 的父目录（New）加入 sys.path
 _root = Path(__file__).resolve().parent
@@ -33,6 +36,21 @@ conf = Config()
 # 目标 MCP：RAG 文档问答 8023
 RAG_MCP_URL = "http://127.0.0.1:8023/mcp"
 
+
+def _no_proxy_http_client_factory(headers=None, timeout=None, auth=None):
+    """
+    构造 httpx.AsyncClient 时禁用系统代理（trust_env=False）。
+    本机开启了 Windows 系统代理（如 127.0.0.1:12000），若不禁用，
+    本地 MCP(8023) 请求会被代理转发并返回 502 Bad Gateway。
+    """
+    return httpx.AsyncClient(
+        headers=headers,
+        timeout=timeout or httpx.Timeout(120.0, read=300.0),
+        auth=auth,
+        follow_redirects=True,
+        trust_env=False,
+    )
+
 agent_card = AgentCard(
     name="DocumentQueryAgent",
     description="基于已入库的企业文档（方案/合同/招标文件等）进行问答的助手",
@@ -50,7 +68,7 @@ agent_card = AgentCard(
 
 
 async def _call_rag_mcp(query: str):
-    async with streamablehttp_client(RAG_MCP_URL) as (read, write, _):
+    async with streamablehttp_client(RAG_MCP_URL, httpx_client_factory=_no_proxy_http_client_factory) as (read, write, _):
         async with ClientSession(read, write) as session:
             await session.initialize()
             result = await asyncio.wait_for(
@@ -59,15 +77,44 @@ async def _call_rag_mcp(query: str):
             return result.content[0].text
 
 
-async def query_documents(query: str) -> str:
+async def query_documents(query: str) -> dict:
+    """调用 RAG MCP，返回 {"answer": str, "images": [{alt, description, mime, data(base64)}]}"""
     try:
-        return await with_retry(lambda: _call_rag_mcp(query), retries=2, base_delay=0.5)
+        raw = await with_retry(lambda: _call_rag_mcp(query), retries=2, base_delay=0.5)
     except asyncio.TimeoutError:
         logger.error(f"RAG MCP 查询超时: {query}")
-        return "文档检索响应超时，请稍后重试。"
+        return {"answer": "文档检索响应超时，请稍后重试。", "images": []}
     except Exception as e:
         logger.error(f"RAG MCP 查询出错：{str(e)}")
-        return f"文档检索出错：{str(e)}"
+        return {"answer": f"文档检索出错：{str(e)}", "images": []}
+    try:
+        data = json.loads(raw)
+        return {
+            "answer": data.get("answer", raw),
+            "images": data.get("images", []) or [],
+        }
+    except (json.JSONDecodeError, TypeError):
+        # 兼容旧版：MCP 直接返回纯文本
+        return {"answer": raw, "images": []}
+
+
+def _build_artifact_parts(result: dict) -> list:
+    """把答案与图片构造成 A2A artifacts 的 parts 列表（text + file）"""
+    parts = [{"type": "text", "text": result.get("answer", "")}]
+    for i, img in enumerate(result.get("images", []), start=1):
+        mime = img.get("mime", "image/png")
+        ext = mime.split("/")[-1] if "/" in mime else "png"
+        if ext == "jpeg":
+            ext = "jpg"
+        parts.append({
+            "type": "file",
+            "file": {
+                "mimeType": mime,
+                "bytes": img.get("data", ""),
+                "name": f"image_{i}.{ext}",
+            },
+        })
+    return parts
 
 
 class DocumentQueryServer(A2AServer):
@@ -89,8 +136,9 @@ class DocumentQueryServer(A2AServer):
         logger.info(f"[trace:{trace_id}] 提取到的文档问题: {query}")
 
         try:
-            answer = asyncio.run(query_documents(query))
-            task.artifacts = [{"parts": [{"type": "text", "text": answer}]}]
+            result = asyncio.run(query_documents(query))
+            parts = _build_artifact_parts(result)
+            task.artifacts = [{"parts": parts}]
             task.status = TaskStatus(state=TaskState.COMPLETED)
         except Exception as e:
             logger.error(f"[trace:{trace_id}] 文档问答失败: {str(e)}")

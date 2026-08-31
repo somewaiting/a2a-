@@ -21,6 +21,8 @@ import asyncio
 import json
 import uuid
 import re
+import base64
+import os
 from datetime import datetime
 import pytz
 from python_a2a import AgentNetwork, A2AClient, TextContent, Message, MessageRole, Task
@@ -38,6 +40,31 @@ agent_network = None
 llm = None
 agent_urls = {}
 conversation_history = ""
+
+
+def _extract_cli_response(parts):
+    """从 A2A artifact parts 提取纯文本，并把图片保存到 query_images_output/ 返回保存路径"""
+    text = ""
+    saved = []
+    out_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "query_images_output")
+    os.makedirs(out_dir, exist_ok=True)
+    for part in parts or []:
+        if not isinstance(part, dict):
+            continue
+        if part.get("type") == "text":
+            text += part.get("text", "")
+        elif part.get("type") == "file":
+            f = part.get("file") or {}
+            if str(f.get("mimeType", "")).startswith("image/"):
+                name = f.get("name", f"image_{len(saved)+1}.png")
+                try:
+                    path = os.path.join(out_dir, name)
+                    with open(path, "wb") as fh:
+                        fh.write(base64.b64decode(f.get("bytes", "")))
+                    saved.append(path)
+                except Exception:
+                    continue
+    return text, saved
 
 
 def initialize_system():
@@ -132,7 +159,9 @@ def process_user_input(prompt):
                         return
                     logger.info(f"[trace:{trace_id}] {agent_name} 原始响应: {raw_response}")
                     if raw_response.status.state == 'completed':
-                        response = raw_response.artifacts[0]['parts'][0]['text']
+                        response, saved_images = _extract_cli_response(raw_response.artifacts[0]['parts'])
+                        if saved_images:
+                            response += "\n\n[图片已保存至]:" + "\n".join(f"\n  {p}" for p in saved_images)
                     else:
                         response = raw_response.status.message['content']['text']
             conversation_history += f"\nAssistant: {response}"

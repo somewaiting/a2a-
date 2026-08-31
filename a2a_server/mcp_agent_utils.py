@@ -11,6 +11,7 @@
 """
 
 import asyncio
+import httpx
 from mcp import ClientSession
 from mcp.client.streamable_http import streamablehttp_client
 from langchain_mcp_adapters.tools import load_mcp_tools
@@ -21,9 +22,20 @@ from My_agent.create_logger import logger
 from My_agent.utils.retry import with_retry
 
 
+def _no_proxy_http_client_factory(headers=None, timeout=None, auth=None):
+    """禁用系统代理，确保本地 MCP 直连（Windows 系统代理会导致本地请求 502）"""
+    return httpx.AsyncClient(
+        headers=headers,
+        timeout=timeout or httpx.Timeout(60.0, read=300.0),
+        auth=auth,
+        follow_redirects=True,
+        trust_env=False,
+    )
+
+
 async def _do_run(llm, mcp_url: str, system_prompt: str, query: str) -> dict:
     """单次执行：建立 MCP 会话 → tool-calling Agent 完成任务（带 60s 超时）。"""
-    async with streamablehttp_client(mcp_url) as (read, write, _):
+    async with streamablehttp_client(mcp_url, httpx_client_factory=_no_proxy_http_client_factory) as (read, write, _):
         async with ClientSession(read, write) as session:
             await session.initialize()
             tools = await load_mcp_tools(session)

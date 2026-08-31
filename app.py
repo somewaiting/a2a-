@@ -14,6 +14,7 @@ import asyncio
 import uuid
 import json
 import re
+import base64
 from datetime import datetime
 import pytz
 import streamlit as st
@@ -66,6 +67,36 @@ if "agent_network" not in st.session_state:
     st.session_state.conversation_history = ""
 
 
+# ========== A2A 响应多 part 解析与渲染（支持图片） ==========
+def _extract_parts(parts):
+    """从 A2A artifact parts 提取 (text, images)；images 为 [{bytes, mime, name}]"""
+    text = ""
+    images = []
+    for part in parts or []:
+        if not isinstance(part, dict):
+            continue
+        if part.get("type") == "text":
+            text += part.get("text", "")
+        elif part.get("type") == "file":
+            f = part.get("file") or {}
+            if str(f.get("mimeType", "")).startswith("image/"):
+                images.append({
+                    "bytes": f.get("bytes", ""),
+                    "mime": f.get("mimeType", "image/png"),
+                    "name": f.get("name", "图片"),
+                })
+    return text, images
+
+
+def _render_assistant(text, images=None):
+    st.markdown(text)
+    for img in images or []:
+        try:
+            st.image(base64.b64decode(img["bytes"]), caption=img.get("name", ""))
+        except Exception:
+            continue
+
+
 # ========== 意图识别 agent ==========
 def intent_agent(user_input):
     chain = MyAgentPrompts.intent_prompt() | st.session_state.llm
@@ -105,7 +136,10 @@ with col1:
     st.subheader("💬 对话")
     for message in st.session_state.messages:
         with st.chat_message(message["role"]):
-            st.markdown(message["content"])
+            if message["role"] == "assistant":
+                _render_assistant(message.get("content", ""), message.get("images"))
+            else:
+                st.markdown(message["content"])
 
     if prompt := st.chat_input("请输入您的问题，例如：查询西湖文旅的签订进度..."):
         with st.chat_message("user"):
@@ -119,6 +153,7 @@ with col1:
             try:
                 status.update(label="正在识别意图...")
                 intent, rewritten_query, follow_up, help_text = intent_agent(prompt)
+                resp_images = []
 
                 if intent == "help":
                     status.update(label="完成")
@@ -158,15 +193,15 @@ with col1:
                             else:
                                 logger.info(f"[trace:{trace_id}] {agent_name} 原始响应: {raw_response}")
                                 if raw_response.status.state == 'completed':
-                                    response = raw_response.artifacts[0]['parts'][0]['text']
+                                    response, resp_images = _extract_parts(raw_response.artifacts[0]['parts'])
                                 else:
                                     response = raw_response.status.message['content']['text']
                         status.update(label="完成")
                     st.session_state.conversation_history += f"\nAssistant: {response}"
 
                 with st.chat_message("assistant"):
-                    st.markdown(response)
-                st.session_state.messages.append({"role": "assistant", "content": response})
+                    _render_assistant(response, resp_images)
+                st.session_state.messages.append({"role": "assistant", "content": response, "images": resp_images})
             except json.JSONDecodeError as json_err:
                 logger.error(f"[trace:{trace_id}] 意图识别JSON解析失败")
                 error_message = f"意图识别解析失败，请重试。"

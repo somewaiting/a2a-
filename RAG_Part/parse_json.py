@@ -309,6 +309,46 @@ def build_parent_blocks(units: List[Dict], heading_path: str, source_file: str) 
     return parents
 
 
+def prepare_image_unit(u: Dict, json_stem: str) -> Tuple[str, Optional[Path], str]:
+    """
+    归一化图片 src（data URI 落盘 / 相对路径解析），并生成/复用 Qwen 多模态描述。
+    结果回写 u["src"] / u["abs_path"] / u["description"]，返回 (src, abs_path, description)。
+    """
+    src_raw = u.get("src", "")            # 原始值：可能是 data URI 或相对路径
+    alt = u.get("alt", "")
+
+    # 归一化：data URI 先解码落盘为哈希命名文件，得到相对路径 + 绝对路径
+    src = src_raw
+    img_path = None
+    if src.startswith("data:"):
+        saved = save_data_uri_image(src, json_stem)
+        if saved:
+            img_path, src = saved         # (绝对路径, images/xxx.ext)
+        else:
+            src = ""                      # 解码失败，标记无有效来源
+    else:
+        img_path = resolve_image_path(json_stem, src)
+
+    # 调用多模态模型（仅在首次处理时调用，可缓存）
+    description = u.get("description", "")
+    if not description and img_path and img_path.exists():
+        print(f"      🔍 识别图片: {src}")
+        description = describe_image_with_qwen(img_path)
+        u["description"] = description  # 缓存回写
+        if description:
+            print(f"      ✅ 描述已生成 ({len(description)} 字)")
+        else:
+            description = alt or "图片暂无描述"
+    elif not description:
+        print(f"      ⚠️ 图片无有效来源: {src_raw[:60]}...")
+        description = alt or "图片暂无描述"
+
+    u["src"] = src
+    u["abs_path"] = str(img_path) if img_path else ""
+    u["description"] = description
+    return src, img_path, description
+
+
 def build_documents_from_json(json_path: Path) -> List[Document]:
     """
     处理单个 JSON 文件，返回 Document 列表（子块），
@@ -330,12 +370,19 @@ def build_documents_from_json(json_path: Path) -> List[Document]:
         parents = build_parent_blocks(hp_units, hp, json_path.name)
         all_parents.extend(parents)
 
-    # ---- 第三步：按原文顺序遍历父块，生成子块 Document ----
+    # ---- 第三步：预生成图片描述。
+    # 必须在计算 parent_content 之前完成，否则父块文本里的图片占位（[图片: ...]）为空描述。
+    # ---- 第四步：按原文顺序遍历父块，生成子块 Document ----
     documents: List[Document] = []
     timestamp = get_timestamp()
 
     for pb in all_parents:
-        parent_content = pb.parent_content
+        # 先生成该父块内所有图片描述（结果缓存回 u，幂等）
+        for u in pb.units:
+            if u.get("type") == "image":
+                prepare_image_unit(u, json_stem)
+
+        parent_content = pb.parent_content   # 此时已包含图片描述
         text_paras = pb.text_paragraphs
         text_chunks = chunk_text_paragraphs(text_paras, conf.CHILD_CHUNK_SIZE, conf.CHUNK_OVERLAP)
 
@@ -382,36 +429,12 @@ def build_documents_from_json(json_path: Path) -> List[Document]:
                     }
                 ))
 
-            # --- 图片子块：调用 Qwen 生成描述 ---
+            # --- 图片子块：复用预生成的描述 ---
             elif u_type == "image":
-                src_raw = u.get("src", "")            # 原始值：可能是 data URI 或相对路径
+                src = u.get("src", "")
                 alt = u.get("alt", "")
-
-                # 归一化：data URI 先解码落盘为哈希命名文件，得到相对路径 + 绝对路径
-                src = src_raw
-                img_path = None
-                if src.startswith("data:"):
-                    saved = save_data_uri_image(src, json_stem)
-                    if saved:
-                        img_path, src = saved         # (绝对路径, images/xxx.ext)
-                    else:
-                        src = ""                      # 解码失败，标记无有效来源
-                else:
-                    img_path = resolve_image_path(json_stem, src)
-
-                # 调用多模态模型（仅在首次处理时调用，可缓存）
-                description = u.get("description", "")
-                if not description and img_path and img_path.exists():
-                    print(f"      🔍 识别图片: {src}")
-                    description = describe_image_with_qwen(img_path)
-                    u["description"] = description  # 缓存回写
-                    if description:
-                        print(f"      ✅ 描述已生成 ({len(description)} 字)")
-                    else:
-                        description = alt or "图片暂无描述"
-                elif not description:
-                    print(f"      ⚠️ 图片无有效来源: {src_raw[:60]}...")
-                    description = alt or "图片暂无描述"
+                img_path = Path(u.get("abs_path")) if u.get("abs_path") else None
+                description = u.get("description", "") or alt or "图片暂无描述"
 
                 # 用于 Embedding 的文本
                 searchable = f"{alt}\n图片描述: {description}" if alt else f"图片描述: {description}"

@@ -40,6 +40,10 @@ class Config():
         self.QWEN_IMAGE_TEMPERATURE = 0.1
         self.QWEN_IMAGE_MAX_TOKENS = 2048
 
+        # 多模态问答/前端展示的图片数量与大小上限（避免 token 与响应体积过大）
+        self.ANSWER_IMAGE_LIMIT = 1       # 单次问答最多附带/返回的图片数（只返回最相关的一张）
+        self.IMAGE_MAX_BYTES = 6 * 1024 * 1024  # 单张图片超过该大小（字节）则跳过
+
         # 本地模型路径（HuggingFace 缓存快照目录）
         self.bge_m3_model_path = os.path.join(rag_dir, "models", "BAAI--bge-m3", "snapshots", "master")
         self.bge_reranker_model_path = os.path.join(rag_dir, "models", "BAAI--bge-reranker-v2-m3", "snapshots", "master")

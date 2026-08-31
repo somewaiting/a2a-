@@ -10,6 +10,7 @@
       内部复用 My_agent/RAG_Part 的 RAGSystem（混合检索 + 重排 + Qwen 生成答案）。
 """
 import sys
+import json
 from pathlib import Path
 
 # 将 My_agent 的父目录（New）加入 sys.path
@@ -56,17 +57,21 @@ def create_rag_mcp_server():
 
     @rag_mcp.tool(
         name="search_documents",
-        description="对已入库的企业文档进行问答，返回基于检索内容的回答，输入为用户的文档相关问题"
+        description=(
+            "对已入库的企业文档进行问答，返回基于检索内容的回答，输入为用户的文档相关问题。"
+            "返回 JSON：{\"answer\": 答案文本, \"images\": [{alt, description, src, abs_path, mime, data(base64)}]}，"
+            "当问题涉及图片/图表时，images 会携带对应的完整图片（base64），供前端展示。"
+        )
     )
     def search_documents(query: str) -> str:
         logger.info(f"RAG 文档检索请求: {query}")
         try:
             rag_system = _get_rag_system()
-            answer = rag_system.generate_answer(query)
-            return answer
+            result = rag_system.generate_answer_with_images(query)
+            return json.dumps(result, ensure_ascii=False)
         except Exception as e:
             logger.error(f"RAG 文档检索失败: {e}")
-            return f"RAG 文档检索失败：{e}"
+            return json.dumps({"answer": f"RAG 文档检索失败：{e}", "images": []}, ensure_ascii=False)
 
     logger.info("=== RAG MCP服务器信息 ===")
     logger.info(f"名称: {rag_mcp.name} / 端口: {conf.mcp_ports['rag']}")
